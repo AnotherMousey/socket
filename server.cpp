@@ -89,7 +89,7 @@ static std::vector<int32_t> makeNumbers(uint32_t n) {
 
 int main(int argc, char* argv[]) {
     uint16_t port = proto::DEFAULT_PORT;
-    uint32_t n = 10;
+    uint32_t maxN = 10;
 
     if (argc >= 2) {
         int p = std::stoi(argv[1]);
@@ -105,7 +105,7 @@ int main(int argc, char* argv[]) {
             std::cerr << "N must be between 1 and " << proto::MAX_N << ".\n";
             return 1;
         }
-        n = static_cast<uint32_t>(requested);
+        maxN = static_cast<uint32_t>(requested);
     }
 
     int listenFd = socket(AF_INET, SOCK_STREAM, 0);
@@ -134,7 +134,11 @@ int main(int argc, char* argv[]) {
     }
 
     std::cout << "SUM1 server listening on 0.0.0.0:" << port
-              << " with N=" << n << "\n";
+              << " with random N from 1 to " << maxN << "\n";
+
+    std::random_device randomDevice;
+    std::mt19937 nGenerator(randomDevice());
+    std::uniform_int_distribution<uint32_t> nDistribution(1, maxN);
 
     // Sequential server: accepts one client at a time. This keeps the base assignment simple.
     while (true) {
@@ -157,64 +161,52 @@ int main(int argc, char* argv[]) {
             continue;
         }
 
-        // 2) Reply with CHALLENGE containing N and N consecutive integers.
-        std::vector<int32_t> numbers = makeNumbers(n);
-        int64_t correctSum = 0;
-        for (int32_t x : numbers) correctSum += static_cast<int64_t>(x);
+        while (true) {
+            // 2) Reply with CHALLENGE containing N random integers.
+            uint32_t roundN = nDistribution(nGenerator);
+            std::vector<int32_t> numbers = makeNumbers(roundN);
+            int64_t correctSum = 0;
+            for (int32_t x : numbers) correctSum += static_cast<int64_t>(x);
 
-        if (!sendHeader(clientFd, proto::CHALLENGE)) {
-            close(clientFd);
-            continue;
-        }
-        uint32_t netN = htonl(n);
-        if (!sendAll(clientFd, &netN, sizeof(netN))) {
-            close(clientFd);
-            continue;
-        }
-        bool ok = true;
-        for (int32_t value : numbers) {
-            uint32_t raw = htonl(static_cast<uint32_t>(value));
-            if (!sendAll(clientFd, &raw, sizeof(raw))) {
-                ok = false;
-                break;
+            if (!sendHeader(clientFd, proto::CHALLENGE)) break;
+            uint32_t netN = htonl(roundN);
+            if (!sendAll(clientFd, &netN, sizeof(netN))) break;
+            bool ok = true;
+            for (int32_t value : numbers) {
+                uint32_t raw = htonl(static_cast<uint32_t>(value));
+                if (!sendAll(clientFd, &raw, sizeof(raw))) {
+                    ok = false;
+                    break;
+                }
             }
-        }
-        if (!ok) {
-            close(clientFd);
-            continue;
-        }
+            if (!ok) break;
 
-        std::cout << "Sent challenge: ";
-        for (size_t i = 0; i < numbers.size(); ++i) {
-            if (i) std::cout << ' ';
-            std::cout << numbers[i];
-        }
-        std::cout << " | expected sum=" << correctSum << "\n";
+            std::cout << "Sent challenge: ";
+            for (size_t i = 0; i < numbers.size(); ++i) {
+                if (i) std::cout << ' ';
+                std::cout << numbers[i];
+            }
+            std::cout << " | expected sum=" << correctSum << "\n";
 
-        // 3) Receive client's answer.
-        if (!recvHeader(clientFd, proto::ANSWER)) {
-            close(clientFd);
-            continue;
-        }
-        uint64_t netAnswer = 0;
-        if (!recvAll(clientFd, &netAnswer, sizeof(netAnswer))) {
-            close(clientFd);
-            continue;
-        }
-        int64_t clientAnswer = static_cast<int64_t>(ntohll(netAnswer));
-        uint8_t status = (clientAnswer == correctSum) ? 1 : 0;
+            // 3) Receive client's answer.
+            if (!recvHeader(clientFd, proto::ANSWER)) break;
+            uint64_t netAnswer = 0;
+            if (!recvAll(clientFd, &netAnswer, sizeof(netAnswer))) break;
+            int64_t clientAnswer = static_cast<int64_t>(ntohll(netAnswer));
+            uint8_t status = (clientAnswer == correctSum) ? 1 : 0;
 
-        // 4) Return validation result and authoritative sum.
-        if (sendHeader(clientFd, proto::RESULT)) {
+            // 4) Return validation result and keep the connection open.
+            if (!sendHeader(clientFd, proto::RESULT)) break;
             uint8_t padding[3] = {0, 0, 0};
             uint64_t netCorrect = htonll(static_cast<uint64_t>(correctSum));
-            sendAll(clientFd, &status, sizeof(status));
-            sendAll(clientFd, padding, sizeof(padding));
-            sendAll(clientFd, &netCorrect, sizeof(netCorrect));
+            if (!sendAll(clientFd, &status, sizeof(status)) ||
+                !sendAll(clientFd, padding, sizeof(padding)) ||
+                !sendAll(clientFd, &netCorrect, sizeof(netCorrect))) break;
+
+            std::cout << "Client answer=" << clientAnswer
+                      << " => " << (status ? "CORRECT" : "WRONG") << "\n";
         }
 
-        std::cout << "Client answer=" << clientAnswer
-                  << " => " << (status ? "CORRECT" : "WRONG") << "\n";
         close(clientFd);
     }
 

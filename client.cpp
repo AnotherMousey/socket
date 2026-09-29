@@ -124,81 +124,62 @@ int main(int argc, char* argv[]) {
     }
     std::cout << "Sent HELLO to server.\n";
 
-    // 2) Server greeting + SUM challenge: N (4 bytes) followed by N signed 32-bit integers.
-    if (!recvHeader(sock, proto::CHALLENGE)) {
-        close(sock);
-        return 1;
-    }
+    while (true) {
+        // 2) Server greeting + SUM challenge: N followed by N signed 32-bit integers.
+        if (!recvHeader(sock, proto::CHALLENGE)) break;
 
-    uint32_t netN = 0;
-    if (!recvAll(sock, &netN, sizeof(netN))) {
-        std::cerr << "Failed to receive N.\n";
-        close(sock);
-        return 1;
-    }
-    uint32_t n = ntohl(netN);
-    if (n == 0 || n > proto::MAX_N) {
-        std::cerr << "Protocol error: invalid N = " << n << ".\n";
-        close(sock);
-        return 1;
-    }
-
-    std::vector<int32_t> numbers;
-    numbers.reserve(n);
-    int64_t sum = 0;
-    for (uint32_t i = 0; i < n; ++i) {
-        uint32_t raw = 0;
-        if (!recvAll(sock, &raw, sizeof(raw))) {
-            std::cerr << "Failed to receive number " << i << ".\n";
-            close(sock);
-            return 1;
+        uint32_t netN = 0;
+        if (!recvAll(sock, &netN, sizeof(netN))) {
+            std::cerr << "Failed to receive N.\n";
+            break;
         }
-        int32_t value = static_cast<int32_t>(ntohl(raw));
-        numbers.push_back(value);
-        sum += static_cast<int64_t>(value);
-    }
+        uint32_t n = ntohl(netN);
+        if (n == 0 || n > proto::MAX_N) {
+            std::cerr << "Protocol error: invalid N = " << n << ".\n";
+            break;
+        }
 
-    std::cout << "Received " << n << " numbers: ";
-    for (size_t i = 0; i < numbers.size(); ++i) {
-        if (i) std::cout << ' ';
-        std::cout << numbers[i];
-    }
-    std::cout << "\nCalculated sum = " << sum << "\n";
+        std::vector<int32_t> numbers;
+        numbers.reserve(n);
+        for (uint32_t i = 0; i < n; ++i) {
+            uint32_t raw = 0;
+            if (!recvAll(sock, &raw, sizeof(raw))) {
+                std::cerr << "Failed to receive number " << i << ".\n";
+                close(sock);
+                return 1;
+            }
+            numbers.push_back(static_cast<int32_t>(ntohl(raw)));
+        }
 
-    // 3) Client sends its computed answer.
-    if (!sendHeader(sock, proto::ANSWER)) {
-        std::cerr << "Failed to send ANSWER header.\n";
-        close(sock);
-        return 1;
-    }
-    uint64_t netSum = htonll(static_cast<uint64_t>(sum));
-    if (!sendAll(sock, &netSum, sizeof(netSum))) {
-        std::cerr << "Failed to send sum.\n";
-        close(sock);
-        return 1;
-    }
+        std::cout << "Received " << n << " numbers: ";
+        for (size_t i = 0; i < numbers.size(); ++i) {
+            if (i) std::cout << ' ';
+            std::cout << numbers[i];
+        }
+        std::cout << "\nEnter the sum: ";
+        int64_t answer = 0;
+        if (!(std::cin >> answer)) break;
 
-    // 4) Server validates and returns CORRECT/WRONG plus the correct sum.
-    if (!recvHeader(sock, proto::RESULT)) {
-        close(sock);
-        return 1;
-    }
-    uint8_t status = 0;
-    uint8_t padding[3]{};
-    uint64_t netCorrect = 0;
-    if (!recvAll(sock, &status, sizeof(status)) ||
-        !recvAll(sock, padding, sizeof(padding)) ||
-        !recvAll(sock, &netCorrect, sizeof(netCorrect))) {
-        std::cerr << "Failed to receive RESULT payload.\n";
-        close(sock);
-        return 1;
-    }
-    int64_t correctSum = static_cast<int64_t>(ntohll(netCorrect));
+        // 3) Client sends the user's answer.
+        if (!sendHeader(sock, proto::ANSWER)) break;
+        uint64_t netSum = htonll(static_cast<uint64_t>(answer));
+        if (!sendAll(sock, &netSum, sizeof(netSum))) break;
 
-    if (status == 1) {
-        std::cout << "Server result: CORRECT\n";
-    } else {
-        std::cout << "Server result: WRONG. Correct sum = " << correctSum << "\n";
+        // 4) Server validates and returns CORRECT/WRONG plus the correct sum.
+        if (!recvHeader(sock, proto::RESULT)) break;
+        uint8_t status = 0;
+        uint8_t padding[3]{};
+        uint64_t netCorrect = 0;
+        if (!recvAll(sock, &status, sizeof(status)) ||
+            !recvAll(sock, padding, sizeof(padding)) ||
+            !recvAll(sock, &netCorrect, sizeof(netCorrect))) break;
+        int64_t correctSum = static_cast<int64_t>(ntohll(netCorrect));
+
+        if (status == 1) {
+            std::cout << "Server result: CORRECT\n";
+        } else {
+            std::cout << "Server result: WRONG. Correct sum = " << correctSum << "\n";
+        }
     }
 
     close(sock);
